@@ -1,0 +1,12 @@
+{
+  "appId": "com.madani.schoolmgmt",
+  "appName": "Madani School",
+  "webDir": "www",
+  "server": {
+    "androidScheme": "https",
+    "cleartext": true,
+    "allowNavigation": ["*"],
+    "url": "https://madani-school-management-production.up.railway.app"
+  },
+  "android": { "allowMixedContent": true }
+}

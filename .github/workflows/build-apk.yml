@@ -1,0 +1,39 @@
+name: Build Android APK
+on:
+  workflow_dispatch:
+  push:
+permissions:
+  contents: write
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - name: Prepare Capacitor Android project
+        run: |
+          npm install
+          npx cap add android || true
+          npx cap sync android
+      - name: Build debug APK
+        working-directory: android
+        run: |
+          chmod +x ./gradlew
+          ./gradlew assembleDebug
+      - name: Rename APK
+        run: cp android/app/build/outputs/apk/debug/app-debug.apk MadaniSchool.apk
+      - name: Publish public release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release delete apk-latest --repo "${{ github.repository }}" --yes --cleanup-tag || true
+          gh release create apk-latest MadaniSchool.apk \
+            --repo "${{ github.repository }}" \
+            --title "Madani School — Android App" \
+            --notes "Public download — no login needed. Tap MadaniSchool.apk to install on any Android phone."
