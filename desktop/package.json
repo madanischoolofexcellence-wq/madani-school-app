@@ -2,7 +2,7 @@
   "name": "madani-school-desktop",
   "version": "1.0.0",
   "private": true,
-  "description": "Madani School of Excellence — Windows app (opens the live school system)",
+  "description": "Madani School of Excellence \u2014 Windows app (opens the live school system)",
   "author": "Madani School of Excellence",
   "main": "main.js",
   "scripts": {
@@ -10,7 +10,8 @@
     "dist": "electron-builder --win nsis --publish never"
   },
   "dependencies": {
-    "electron-updater": "^6.3.9"
+    "electron-updater": "^6.3.9",
+    "node-zklib": "^1.3.0"
   },
   "devDependencies": {
     "electron": "^37.2.0",
@@ -20,9 +21,28 @@
     "appId": "com.madani.schoolmgmt.desktop",
     "productName": "Madani School",
     "artifactName": "MadaniSchool-Setup.exe",
-    "directories": { "output": "dist", "buildResources": "build" },
-    "files": ["main.js", "offline.html", "build/icon.png", "package.json"],
-    "win": { "target": [{ "target": "nsis", "arch": ["x64"] }], "icon": "build/icon.ico" },
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    },
+    "files": [
+      "main.js",
+      "offline.html",
+      "build/icon.png",
+      "package.json",
+      "bridge.js"
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "build/icon.ico"
+    },
     "nsis": {
       "oneClick": true,
       "perMachine": false,

@@ -3,6 +3,12 @@
 Public installer for the Madani School management app. The app opens the school's
 live system inside an app icon.
 
+## Install on Windows PC
+Open the latest release, download **MadaniSchool-Setup.exe**, and run it. It adds a
+"Madani School" shortcut to the desktop and Start menu. The app updates itself automatically.
+Keep it open (logged in) on a PC at school that is on the same network as the fingerprint
+device — it reads the device every 5 minutes and sends the attendance to the online system.
+
 ## Install on Android
 Open the latest release, download **MadaniSchool.apk**, and install it
 (allow "install from unknown sources" when asked).
