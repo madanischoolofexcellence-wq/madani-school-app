@@ -1,0 +1,19 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Madani School — Offline</title>
+<style>
+  body{margin:0;height:100vh;display:grid;place-items:center;font-family:Segoe UI,system-ui,sans-serif;background:#F3F6FA;color:#14233A}
+  .card{background:#fff;border:1px solid #D6DFEA;border-radius:16px;padding:36px 40px;text-align:center;max-width:420px}
+  h1{font-size:22px;margin:0 0 8px} p{color:#56657A;margin:0 0 20px;line-height:1.5}
+  button{background:#14233A;color:#fff;border:0;border-radius:10px;padding:10px 22px;font-size:15px;cursor:pointer}
+</style></head>
+<body><div class="card">
+  <h1>No internet connection</h1>
+  <p>Madani School could not reach the school server. Check the internet connection and try again.<br>ইন্টারনেট সংযোগ পরীক্ষা করে আবার চেষ্টা করুন।</p>
+  <button id="retry">Try again</button>
+</div>
+<script>
+  const target = new URLSearchParams(location.search).get("url") || "https://madani-school-management-production.up.railway.app";
+  document.getElementById("retry").onclick = () => { location.href = target; };
+  setInterval(() => { if (navigator.onLine) location.href = target; }, 15000);
+</script>
+</body></html>
