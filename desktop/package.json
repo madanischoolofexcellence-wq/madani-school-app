@@ -1,0 +1,40 @@
+{
+  "name": "madani-school-desktop",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Madani School of Excellence — Windows app (opens the live school system)",
+  "author": "Madani School of Excellence",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder --win nsis --publish never"
+  },
+  "dependencies": {
+    "electron-updater": "^6.3.9"
+  },
+  "devDependencies": {
+    "electron": "^37.2.0",
+    "electron-builder": "^25.1.8"
+  },
+  "build": {
+    "appId": "com.madani.schoolmgmt.desktop",
+    "productName": "Madani School",
+    "artifactName": "MadaniSchool-Setup.exe",
+    "directories": { "output": "dist", "buildResources": "build" },
+    "files": ["main.js", "offline.html", "build/icon.png", "package.json"],
+    "win": { "target": [{ "target": "nsis", "arch": ["x64"] }], "icon": "build/icon.ico" },
+    "nsis": {
+      "oneClick": true,
+      "perMachine": false,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Madani School"
+    },
+    "publish": [
+      {
+        "provider": "generic",
+        "url": "https://github.com/madanischoolofexcellence-wq/madani-school-app/releases/latest/download"
+      }
+    ]
+  }
+}
