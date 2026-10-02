@@ -48,7 +48,8 @@
       "perMachine": false,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
-      "shortcutName": "Madani School"
+      "shortcutName": "Madani School",
+      "differentialPackage": false
     },
     "publish": [
       {
