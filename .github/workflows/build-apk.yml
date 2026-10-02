@@ -1,11 +1,11 @@
-name: Build Android APK
+name: Build Android APK + Windows app
 on:
   workflow_dispatch:
   push:
 permissions:
   contents: write
 jobs:
-  build:
+  android:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -28,14 +28,55 @@ jobs:
           ./gradlew assembleDebug
       - name: Rename APK
         run: cp android/app/build/outputs/apk/debug/app-debug.apk MadaniSchool.apk
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android
+          path: MadaniSchool.apk
+
+  windows:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: desktop
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Install
+        run: npm ci
+      - name: Set version from build number (used by auto-update)
+        run: npm version "1.0.${{ github.run_number }}" --no-git-tag-version --allow-same-version
+      - name: Build Windows installer
+        run: npm run dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: |
+            desktop/dist/MadaniSchool-Setup.exe
+            desktop/dist/MadaniSchool-Setup.exe.blockmap
+            desktop/dist/latest.yml
+
+  release:
+    # Only builds from main are published; other branches just keep the build artifacts.
+    if: github.ref == 'refs/heads/main'
+    needs: [android, windows]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: out
+          merge-multiple: true
       - name: Publish public release
-        # Only builds from main are published; other branches just build.
-        if: github.ref == 'refs/heads/main'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          ls -la out
           gh release delete apk-latest --repo "${{ github.repository }}" --yes --cleanup-tag || true
-          gh release create apk-latest MadaniSchool.apk \
+          gh release create apk-latest out/MadaniSchool.apk out/MadaniSchool-Setup.exe out/MadaniSchool-Setup.exe.blockmap out/latest.yml \
             --repo "${{ github.repository }}" \
-            --title "Madani School — Android App" \
-            --notes "Public download — no login needed. Tap MadaniSchool.apk to install on any Android phone."
+            --latest \
+            --title "Madani School — Android & Windows App (1.0.${{ github.run_number }})" \
+            --notes "Public download — no login needed.
+          - Android: tap MadaniSchool.apk to install.
+          - Windows PC: download MadaniSchool-Setup.exe and run it. The app updates itself automatically, and on a school PC it syncs the fingerprint device."
