@@ -2,7 +2,7 @@
 // It opens the live school system, so every website update appears here immediately.
 // The app shell itself also updates automatically from the GitHub release.
 // On a school PC it also relays the fingerprint device's punches to the server (see bridge.js).
-const { app, BrowserWindow, Menu, shell, dialog, session } = require("electron");
+const { app, BrowserWindow, Menu, shell, dialog, session, Notification, powerMonitor } = require("electron");
 const path = require("path");
 const { autoUpdater } = require("electron-updater");
 const { syncAll } = require("./bridge");
@@ -106,7 +106,10 @@ function buildMenu() {
 function checkForUpdates(manual) {
   if (!app.isPackaged) return;
   autoUpdater.checkForUpdates().then((r) => {
-    if (manual && (!r || !r.isUpdateAvailable)) {
+    if (!manual) return;
+    if (r && r.isUpdateAvailable) {
+      dialog.showMessageBox(win, { type: "info", message: `Downloading version ${r.updateInfo.version}…`, detail: "It will install by itself and the app will reopen — nothing to do." });
+    } else {
       dialog.showMessageBox(win, { type: "info", message: "Madani School is up to date.", detail: `Version ${app.getVersion()}` });
     }
   }).catch((err) => {
@@ -114,20 +117,34 @@ function checkForUpdates(manual) {
   });
 }
 
-// Download updates silently in the background and install them when the app is closed.
+// Fully automatic updates: download in the background, then install silently and reopen the app
+// as soon as nobody is using it (PC idle 2+ minutes, window minimised/hidden) — or when it is closed.
+// Waiting for an idle moment means a restart never wipes a form someone is typing.
 autoUpdater.autoDownload = true;
 autoUpdater.autoInstallOnAppQuit = true;
+let pendingUpdate = null;
+
+function installPendingUpdate() {
+  if (!pendingUpdate) return;
+  const idle = powerMonitor.getSystemIdleTime() >= 120;
+  const away = !win || win.isMinimized() || !win.isVisible();
+  if (idle || away) {
+    app.isQuitting = true;
+    autoUpdater.quitAndInstall(true /* silent */, true /* reopen after install */);
+  }
+}
+
 autoUpdater.on("update-downloaded", (info) => {
-  dialog
-    .showMessageBox(win, {
-      type: "info",
-      buttons: ["Restart now", "Later"],
-      defaultId: 0,
-      message: `A new version (${info.version}) of Madani School is ready.`,
-      detail: "Restart now to finish updating, or it will update the next time you close the app.",
-    })
-    .then(({ response }) => { if (response === 0) autoUpdater.quitAndInstall(); });
+  pendingUpdate = info;
+  if (Notification.isSupported()) {
+    new Notification({
+      title: "Madani School is updating",
+      body: `Version ${info.version} is ready. It will install by itself in a quiet moment and the app will reopen.`,
+    }).show();
+  }
+  installPendingUpdate();
 });
+setInterval(installPendingUpdate, 60 * 1000);
 
 if (!app.requestSingleInstanceLock()) {
   app.quit();
@@ -139,7 +156,7 @@ if (!app.requestSingleInstanceLock()) {
     buildMenu();
     createWindow();
     checkForUpdates(false);
-    setInterval(() => checkForUpdates(false), 4 * 60 * 60 * 1000); // every 4 hours
+    setInterval(() => checkForUpdates(false), 60 * 60 * 1000); // every hour
     setTimeout(() => runBridge(false), 20 * 1000); // first fingerprint sync shortly after start
     setInterval(() => runBridge(false), 5 * 60 * 1000); // then every 5 minutes
   });

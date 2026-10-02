@@ -54,7 +54,6 @@ jobs:
           name: windows
           path: |
             desktop/dist/MadaniSchool-Setup.exe
-            desktop/dist/MadaniSchool-Setup.exe.blockmap
             desktop/dist/latest.yml
 
   release:
@@ -73,7 +72,7 @@ jobs:
         run: |
           ls -la out
           gh release delete apk-latest --repo "${{ github.repository }}" --yes --cleanup-tag || true
-          gh release create apk-latest out/MadaniSchool.apk out/MadaniSchool-Setup.exe out/MadaniSchool-Setup.exe.blockmap out/latest.yml \
+          gh release create apk-latest out/MadaniSchool.apk out/MadaniSchool-Setup.exe out/latest.yml \
             --repo "${{ github.repository }}" \
             --latest \
             --title "Madani School — Android & Windows App (1.0.${{ github.run_number }})" \
