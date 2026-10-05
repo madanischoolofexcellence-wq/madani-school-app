@@ -5,7 +5,7 @@
 const { app, BrowserWindow, Menu, shell, dialog, session, Notification, powerMonitor } = require("electron");
 const path = require("path");
 const { autoUpdater } = require("electron-updater");
-const { syncAll } = require("./bridge");
+const { syncAll, runDeviceCommands } = require("./bridge");
 const { syncPeople } = require("./zkbio");
 
 const APP_URL = "https://madani-school-management-production.up.railway.app";
@@ -28,6 +28,7 @@ async function runBridge(manual) {
     } else {
       lastBridge = r.results.map((x) => `${x.name}: ${x.ok ? "OK" : "FAILED"} — ${x.message}`).join("\n");
     }
+    if (r.commandText) lastBridge += `\n\nDone on the device\n${r.commandText}`;
     // People: ZKBio Time.Net on this PC <-> the school system (see zkbio.js).
     if (r.loggedIn) {
       try {
@@ -44,6 +45,18 @@ async function runBridge(manual) {
   }
   lastBridge = `${new Date().toLocaleTimeString()} — ${lastBridge}`;
   if (manual) dialog.showMessageBox(win, { type: "info", message: "Fingerprint device and people sync", detail: lastBridge });
+}
+
+// Every 20 seconds: is there a person to add to the device, or a fingerprint to take (asked for on the website)?
+async function runCommandsOnly() {
+  if (bridgeBusy) return;
+  bridgeBusy = true;
+  try {
+    const text = await runDeviceCommands(APP_URL, (url, opts) => session.defaultSession.fetch(url, opts));
+    if (text) lastBridge = `${new Date().toLocaleTimeString()} — Done on the device\n${text}`;
+  } catch { /* tried again in 20 seconds */ } finally {
+    bridgeBusy = false;
+  }
 }
 
 function createWindow() {
@@ -169,6 +182,7 @@ if (!app.requestSingleInstanceLock()) {
     setInterval(() => checkForUpdates(false), 60 * 60 * 1000); // every hour
     setTimeout(() => runBridge(false), 20 * 1000); // first fingerprint sync shortly after start
     setInterval(() => runBridge(false), 5 * 60 * 1000); // then every 5 minutes
+    setInterval(runCommandsOnly, 20 * 1000); // requests from the website reach the device quickly
   });
   app.on("window-all-closed", () => app.quit());
 }
