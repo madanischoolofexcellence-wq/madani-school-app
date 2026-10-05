@@ -31,7 +31,8 @@
       "build/icon.png",
       "package.json",
       "bridge.js",
-      "zkbio.js"
+      "zkbio.js",
+      "backup.js"
     ],
     "win": {
       "target": [

@@ -7,6 +7,7 @@ const path = require("path");
 const { autoUpdater } = require("electron-updater");
 const { syncAll, runDeviceCommands } = require("./bridge");
 const { syncPeople } = require("./zkbio");
+const { copyToPc, newestCopy } = require("./backup");
 
 const APP_URL = "https://madani-school-management-production.up.railway.app";
 const APP_ORIGIN = new URL(APP_URL).origin;
@@ -45,6 +46,24 @@ async function runBridge(manual) {
   }
   lastBridge = `${new Date().toLocaleTimeString()} — ${lastBridge}`;
   if (manual) dialog.showMessageBox(win, { type: "info", message: "Fingerprint device and people sync", detail: lastBridge });
+}
+
+// A copy of the school's data on this PC, once a day (see backup.js).
+const backupFolder = () => path.join(app.getPath("documents"), "Madani School Backups");
+let lastCopy = "Not run yet";
+let copyBusy = false;
+async function runCopy(manual) {
+  if (copyBusy) return;
+  copyBusy = true;
+  try {
+    const r = await copyToPc(APP_URL, (url, opts) => session.defaultSession.fetch(url, opts), backupFolder(), manual);
+    if (r.done || !r.ok || manual) lastCopy = `${new Date().toLocaleString()} — ${r.message}`;
+  } catch (e) {
+    lastCopy = `${new Date().toLocaleString()} — Could not copy: ${e && e.message ? e.message : e}`;
+  } finally {
+    copyBusy = false;
+  }
+  if (manual) dialog.showMessageBox(win, { type: "info", message: "Copy of the school's data on this PC", detail: lastCopy });
 }
 
 // Every 20 seconds: is there a person to add to the device, or a fingerprint to take (asked for on the website)?
@@ -111,6 +130,10 @@ function buildMenu() {
           { type: "separator" },
           { label: "Sync fingerprint device and people now", click: () => runBridge(true) },
           { label: "Fingerprint sync status", click: () => dialog.showMessageBox(win, { type: "info", message: "Last fingerprint sync", detail: lastBridge }) },
+          { type: "separator" },
+          { label: "Copy the school's data to this PC now", click: () => runCopy(true) },
+          { label: "Open the folder of copies", click: () => { require("fs").mkdirSync(backupFolder(), { recursive: true }); shell.openPath(backupFolder()); } },
+          { label: "Copy status", click: () => dialog.showMessageBox(win, { type: "info", message: "Copy of the school's data on this PC", detail: `${lastCopy}\n\nNewest copy: ${newestCopy(backupFolder()) || "none yet"}\nFolder: ${backupFolder()}` }) },
           { type: "separator" },
           { label: "Check for updates", click: () => checkForUpdates(true) },
           { type: "separator" },
@@ -182,6 +205,8 @@ if (!app.requestSingleInstanceLock()) {
     setInterval(() => checkForUpdates(false), 60 * 60 * 1000); // every hour
     setTimeout(() => runBridge(false), 20 * 1000); // first fingerprint sync shortly after start
     setInterval(() => runBridge(false), 5 * 60 * 1000); // then every 5 minutes
+    setTimeout(() => runCopy(false), 90 * 1000); // today's copy of the data, if this PC does not have it yet
+    setInterval(() => runCopy(false), 60 * 60 * 1000); // looked at every hour; fetched once a day
     setInterval(runCommandsOnly, 20 * 1000); // requests from the website reach the device quickly
   });
   app.on("window-all-closed", () => app.quit());
