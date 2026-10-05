@@ -45,6 +45,8 @@ jobs:
           node-version: "20"
       - name: Install
         run: npm ci
+      - name: Check the ZKBio database reader works inside the app
+        run: npx electron sqlite-check.js
       - name: Set version from build number (used by auto-update)
         run: npm version "1.0.${{ github.run_number }}" --no-git-tag-version --allow-same-version
       - name: Build Windows installer
