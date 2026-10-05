@@ -3,9 +3,10 @@
 //   ZKBio -> school system : every person in ZKBio (ID, name, department, position) is sent to the
 //                            server, which adds the new ones as staff / students. ZKBio is only read.
 //   school system -> ZKBio : an active staff member or student who has a Fingerprint ID that ZKBio
-//                            does not know is added to ZKBio's people list (name, department, position).
-//                            Nothing in ZKBio is ever changed or removed — rows are only added, and a
-//                            copy of ZKBio's database is kept first.
+//                            does not know is added to ZKBio's people list (name, department, position),
+//                            and a name, department or position edited there is written into ZKBio for
+//                            that person. Nobody is ever removed from ZKBio, and a copy of ZKBio's
+//                            database is kept before every write.
 //
 // ZKBio Time.Net keeps its data in a plain SQLite file, TimeNet.db, in its program folder.
 const fs = require("fs");
@@ -78,8 +79,99 @@ function backup(file, dir) {
 }
 
 /**
+ * Finds a department or position in ZKBio by name; when ZKBio does not have it, makes it (the way ZKBio
+ * itself does), so a name written in the school system comes back unchanged. A student's class is made
+ * under ZKBio's "Students" department.
+ */
+function lookups(db) {
+  const first = (table) => db.prepare(`SELECT company_id AS c FROM ${table} ORDER BY id LIMIT 1`).get();
+  const dept = (name, student) => {
+    const want = String(name || "").trim();
+    if (!want) return 0;
+    const all = db.prepare("SELECT id, dept_code AS code, dept_name AS name FROM hr_department").all();
+    const hit = all.find((d) => norm(d.name) === norm(want));
+    if (hit) return hit.id;
+    const parent = student ? all.find((d) => ["students", "student"].includes(norm(d.name))) : null;
+    const code = all.reduce((m, d) => Math.max(m, Number(d.code) || 0), 0) + 1;
+    const company = (first("hr_department") || {}).c || 1;
+    return Number(db.prepare(
+      `INSERT INTO hr_department (dept_code, dept_name, dept_parentcode, useCode, dept_operationmode, middleware_id, defaultDepartment, description, company_id)
+       VALUES (?, ?, ?, 1, 0, 0, 0, '', ?)`
+    ).run(code, want, parent ? Number(parent.code) : 0, company).lastInsertRowid);
+  };
+  const posi = (name) => {
+    const want = String(name || "").trim();
+    if (!want) return 0;
+    const all = db.prepare("SELECT id, posi_code AS code, posi_name AS name FROM hr_position").all();
+    const hit = all.find((p) => norm(p.name) === norm(want));
+    if (hit) return hit.id;
+    const code = all.reduce((m, p) => Math.max(m, Number(p.code) || 0), 0) + 1;
+    const company = (first("hr_position") || {}).c || 1;
+    return Number(db.prepare(
+      "INSERT INTO hr_position (posi_code, posi_name, description, posi_parentcode, defaultPosition, company_id) VALUES (?, ?, '', 0, 0, ?)"
+    ).run(code, want, company).lastInsertRowid);
+  };
+  return { dept, posi };
+}
+
+/** Where a person with no department goes: "Students" / "Others" if ZKBio has them, else ZKBio's default department. */
+function fallbackDept(db, student) {
+  const all = db.prepare("SELECT id, dept_name AS name, defaultDepartment AS def FROM hr_department").all();
+  const hit = all.find((d) => (student ? ["students", "student"] : ["others", "other"]).includes(norm(d.name)));
+  const def = hit || all.find((d) => Number(d.def) === 1) || all[0];
+  return def ? def.id : 0;
+}
+
+/**
+ * Write details edited in the school system into ZKBio. `changes`: [{ id, pin, name, department, position }].
+ * Only the name, department and position of that one person are touched. Returns [{ id, ok, message }].
+ */
+function applyChanges(file, changes, backupDir) {
+  if (changes.length === 0) return [];
+  const out = [];
+  const db0 = openDb(file, true);
+  let present;
+  try {
+    present = new Set(db0.prepare("SELECT emp_pin AS pin FROM hr_employee").all().map((r) => String(r.pin).trim()));
+  } finally {
+    db0.close();
+  }
+  const todo = changes.filter((c) => present.has(String(c.pin).trim()));
+  if (todo.length === 0) return out; // not in ZKBio yet: they arrive there as new people, with these details
+  backup(file, backupDir);
+  const db = openDb(file, false);
+  try {
+    const { dept, posi } = lookups(db);
+    db.exec("BEGIN IMMEDIATE");
+    try {
+      for (const c of todo) {
+        const pin = String(c.pin).trim();
+        const cur = db.prepare("SELECT id, emp_firstname AS first, emp_lastname AS last FROM hr_employee WHERE emp_pin = ?").get(pin);
+        const name = String(c.name || "").trim();
+        const student = norm(c.position) === "student";
+        if (name && `${cur.first || ""} ${cur.last || ""}`.replace(/\s+/g, " ").trim() !== name) {
+          db.prepare("UPDATE hr_employee SET emp_firstname = ?, emp_lastname = '' WHERE id = ?").run(name, cur.id);
+        }
+        const d = dept(c.department, student);
+        if (d) db.prepare("UPDATE hr_employee SET department_id = ? WHERE id = ?").run(d, cur.id);
+        const p = posi(c.position);
+        if (p) db.prepare("UPDATE hr_employee SET position_id = ? WHERE id = ?").run(p, cur.id);
+        out.push({ id: c.id, ok: true, message: "Written into ZKBio", name: name || pin });
+      }
+      db.exec("COMMIT");
+    } catch (e) {
+      try { db.exec("ROLLBACK"); } catch { /* nothing was open */ }
+      throw e;
+    }
+  } finally {
+    db.close();
+  }
+  return out;
+}
+
+/**
  * Add people to ZKBio's list. `people`: [{ pin, name, kind: "STAFF"|"STUDENT", department, position }].
- * Only INSERTs; existing rows are never touched. Returns the names added.
+ * Only INSERTs; existing people are never touched here. Returns the names added.
  */
 function addPeople(file, people, backupDir) {
   if (people.length === 0) return [];
@@ -88,26 +180,10 @@ function addPeople(file, people, backupDir) {
   const added = [];
   try {
     const cols = new Set(db.prepare("PRAGMA table_info(hr_employee)").all().map((c) => c.name));
-    const depts = db.prepare("SELECT id, dept_name AS name, defaultDepartment AS def FROM hr_department").all();
-    const posis = db.prepare("SELECT id, posi_name AS name FROM hr_position").all();
     const zone = db.prepare("SELECT id FROM att_zone ORDER BY id LIMIT 1").get();
     const hasPay = !!db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='pay_empDetail'").get();
     const hasZone = !!zone && !!db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='att_employee_zone'").get();
-    const dept = (...names) => {
-      for (const n of names) {
-        const hit = n && depts.find((d) => norm(d.name) === norm(n));
-        if (hit) return hit.id;
-      }
-      const def = depts.find((d) => Number(d.def) === 1) || depts[0];
-      return def ? def.id : 0;
-    };
-    const posi = (...names) => {
-      for (const n of names) {
-        const hit = n && posis.find((p) => norm(p.name) === norm(n));
-        if (hit) return hit.id;
-      }
-      return 0;
-    };
+    const { dept, posi } = lookups(db);
     const exists = db.prepare("SELECT 1 FROM hr_employee WHERE emp_pin = ?");
 
     const d = new Date();
@@ -126,8 +202,8 @@ function addPeople(file, people, backupDir) {
         const row = { emp_pin: p.pin, emp_firstname: p.name, emp_privilege: "0", emp_hiredate: today, emp_active: 1, emp_gender: -1 };
         for (const c of TEXT_BLANK) row[c] = "";
         for (const c of ZERO) row[c] = 0;
-        row.department_id = p.kind === "STUDENT" ? dept(p.department, "Students", "Student") : dept(p.department, "Others", "Other");
-        row.position_id = p.kind === "STUDENT" ? posi("Student") : posi(p.position);
+        row.department_id = dept(p.department, p.kind === "STUDENT") || fallbackDept(db, p.kind === "STUDENT");
+        row.position_id = posi(p.kind === "STUDENT" ? "Student" : p.position) || 0;
         const names = Object.keys(row).filter((c) => cols.has(c));
         const r = db
           .prepare(`INSERT INTO hr_employee (${names.map((n) => `"${n}"`).join(", ")}) VALUES (${names.map(() => "?").join(", ")})`)
@@ -226,6 +302,19 @@ async function syncPeople(appUrl, fetch, stateDir) {
     const get = await fetch(url, { cache: "no-store" });
     const gj = await get.json().catch(() => ({}));
     if (!get.ok || !gj.ok) throw new Error(gj.error || `HTTP ${get.status}`);
+    // Details edited in the school system since the last round.
+    const pending = Array.isArray(gj.pending) ? gj.pending : [];
+    if (pending.length) {
+      try {
+        const done = applyChanges(file, pending, path.join(stateDir, "zkbio-backups"));
+        if (done.length) {
+          await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ done: done.map(({ id, ok, message }) => ({ id, ok, message })) }) });
+          parts.push(`School system → ZKBio: updated ${done.map((d) => d.name).join(", ")}. In ZKBio press Refresh to see it.`);
+        }
+      } catch (e) {
+        parts.push(`School system → ZKBio: could not write ${pending.length} edit(s) (${e && e.message ? e.message : e}).`);
+      }
+    }
     const plan = planAdditions(zk, gj, seen);
     const now = plan.add.slice(0, MAX_ADD_PER_RUN);
     let added = [];
@@ -239,7 +328,12 @@ async function syncPeople(appUrl, fetch, stateDir) {
           : `School system → ZKBio: could not add ${now.length} people (${msg}).`);
       }
     }
-    if (added.length) parts.push(`School system → ZKBio: added ${added.join(", ")}. In ZKBio press Refresh, then send them to the device and enrol the finger.`);
+    if (added.length && pending.length) {
+      const pins = new Set(now.map((p) => p.pin));
+      const done = pending.filter((c) => pins.has(String(c.pin).trim())).map((c) => ({ id: c.id, ok: true, message: "Added to ZKBio with these details" }));
+      if (done.length) await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ done }) }).catch(() => {});
+    }
+    if (added.length) parts.push(`School system → ZKBio: added ${added.join(", ")}. In ZKBio press Refresh to see them. Take the fingerprint from the person's page in Madani School.`);
     else if (!now.length) parts.push("School system → ZKBio: nothing new to add.");
     if (plan.add.length > now.length) parts.push(`${plan.add.length - now.length} more will follow at the next sync.`);
     if (plan.skipped.length) parts.push(`Left alone: ${plan.skipped.join("; ")}.`);
@@ -252,4 +346,4 @@ async function syncPeople(appUrl, fetch, stateDir) {
   return parts.join("\n");
 }
 
-module.exports = { syncPeople, planAdditions, readPeople, addPeople, findDb };
+module.exports = { syncPeople, planAdditions, readPeople, addPeople, applyChanges, findDb };
