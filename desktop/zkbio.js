@@ -14,6 +14,7 @@
 // ZKBio Time.Net keeps its data in a plain SQLite file, TimeNet.db, in its program folder.
 const fs = require("fs");
 const path = require("path");
+const os = require("os");
 
 const DB_CANDIDATES = [
   process.env.MADANI_ZKBIO_DB,
@@ -310,14 +311,17 @@ async function syncPeople(appUrl, fetch, stateDir) {
 
   const url = `${appUrl}/api/biometric/personnel`;
   const send = (body) => fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
-  const post = await send({ people: zk });
+  // The school system follows ONE computer's ZKBio only, so say which computer and file this list is from.
+  const post = await send({ source: { computer: os.hostname(), file }, people: zk });
   if (post.status === 401) return "People: log in to the school system first.";
   const j = await post.json().catch(() => ({}));
   if (!post.ok || !j.ok) return `People: the school system did not accept ZKBio's list (${j.error || `HTTP ${post.status}`}).`;
 
+  if (j.ignored) return `People: ${j.message || "this computer's ZKBio list was not used."}`;
+
   const parts = [];
   const newHere = ((j.added && j.added.staff) || 0) + ((j.added && j.added.students) || 0);
-  parts.push(`ZKBio → school system: ${zk.length} people compared, ${newHere} new added${j.updated ? `, ${j.updated} updated` : ""}.`);
+  parts.push(`ZKBio → school system: ${zk.length} people compared, ${newHere} new added${j.updated ? `, ${j.updated} updated` : ""}${j.removed ? `, ${j.removed} made inactive` : ""}.`);
 
   // An older school system does not decide for this app — then nothing is written into ZKBio at all.
   if (!Array.isArray(j.writes)) {
