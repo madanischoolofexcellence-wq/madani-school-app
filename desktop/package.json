@@ -30,7 +30,8 @@
       "offline.html",
       "build/icon.png",
       "package.json",
-      "bridge.js"
+      "bridge.js",
+      "zkbio.js"
     ],
     "win": {
       "target": [
