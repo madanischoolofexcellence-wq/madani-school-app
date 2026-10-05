@@ -1,12 +1,15 @@
 // People sync between ZKBio Time.Net (on this PC) and the school system (online).
 //
-//   ZKBio -> school system : every person in ZKBio (ID, name, department, position) is sent to the
-//                            server, which adds the new ones as staff / students. ZKBio is only read.
-//   school system -> ZKBio : an active staff member or student who has a Fingerprint ID that ZKBio
-//                            does not know is added to ZKBio's people list (name, department, position),
-//                            and a name, department or position edited there is written into ZKBio for
-//                            that person. Nobody is ever removed from ZKBio, and a copy of ZKBio's
-//                            database is kept before every write.
+// This app only carries: it reads ZKBio's people list and sends it to the school system, which compares
+// the two sides and decides. Clear cases (a brand-new person, a change on one side only) come back as
+// writes for ZKBio; anything doubtful — a person removed from one side, details that disagree — waits
+// in the school system for an admin (Biometric → ZKBio differences) and nothing is written.
+//
+// Writes this app makes in ZKBio, only when the school system asks:
+//   ADD     a new person (ID, name, department, position)
+//   UPDATE  one person's name, department, position
+//   OFF     untick "Enable" for one person (nobody is ever deleted)
+// A copy of ZKBio's database is kept before every write.
 //
 // ZKBio Time.Net keeps its data in a plain SQLite file, TimeNet.db, in its program folder.
 const fs = require("fs");
@@ -37,13 +40,20 @@ function openDb(file, readOnly) {
 
 const norm = (s) => String(s || "").trim().toLowerCase().replace(/[\s_]+/g, " ");
 
-/** Everyone in ZKBio. Read only. */
+/** Everyone in ZKBio, with which fingers ZKBio holds for them (numbers only). Read only. */
 function readPeople(file) {
   const db = openDb(file, true);
   try {
+    const fingers = new Map();
+    try {
+      for (const r of db.prepare("SELECT employee_id AS id, template_no AS no FROM hr_biotemplate WHERE bio_type = 1 AND template_no BETWEEN 0 AND 9").all()) {
+        if (!fingers.has(r.id)) fingers.set(r.id, new Set());
+        fingers.get(r.id).add(Number(r.no));
+      }
+    } catch { /* an older ZKBio without this table: fingers are simply not reported */ }
     return db
       .prepare(
-        `SELECT e.emp_pin AS pin, e.emp_firstname AS first, e.emp_lastname AS last, e.emp_active AS active,
+        `SELECT e.id, e.emp_pin AS pin, e.emp_firstname AS first, e.emp_lastname AS last, e.emp_active AS active,
                 d.dept_name AS department, p.posi_name AS position
          FROM hr_employee e
          LEFT JOIN hr_department d ON d.id = e.department_id
@@ -57,6 +67,7 @@ function readPeople(file) {
         department: r.department ? String(r.department).trim() : null,
         position: r.position ? String(r.position).trim() : null,
         active: Number(r.active) === 1,
+        fingers: [...(fingers.get(r.id) || [])].sort(),
       }))
       .filter((r) => r.pin);
   } finally {
@@ -228,47 +239,63 @@ function addPeople(file, people, backupDir) {
   return added;
 }
 
-/** Fingerprint IDs this app has ever seen in ZKBio — so a person removed from ZKBio on purpose is not put back. */
-function loadSeen(file) {
-  try { return new Set(JSON.parse(fs.readFileSync(file, "utf8")).pins || []); } catch { return new Set(); }
-}
-function saveSeen(file, set) {
-  try { fs.writeFileSync(file, JSON.stringify({ pins: [...set].sort() })); } catch { /* tried */ }
+/** Untick "Enable" for these IDs in ZKBio. Nobody is deleted. Returns [{ id, ok, message }]. */
+function switchOff(file, items, backupDir) {
+  if (items.length === 0) return [];
+  backup(file, backupDir);
+  const db = openDb(file, false);
+  const out = [];
+  try {
+    db.exec("BEGIN IMMEDIATE");
+    try {
+      for (const c of items) {
+        const r = db.prepare("UPDATE hr_employee SET emp_active = 0 WHERE emp_pin = ?").run(String(c.pin).trim());
+        out.push({ id: c.id, ok: true, message: Number(r.changes) ? "Switched off in ZKBio" : "Was not in ZKBio any more", name: c.name || c.pin });
+      }
+      db.exec("COMMIT");
+    } catch (e) {
+      try { db.exec("ROLLBACK"); } catch { /* nothing was open */ }
+      throw e;
+    }
+  } finally {
+    db.close();
+  }
+  return out;
 }
 
-/**
- * Decide who should be added to ZKBio. Pure — no files, no network — so it can be tested.
- * `zk`: people in ZKBio; `server`: { staff, students } from the school system; `seen`: Set of IDs seen before.
- */
-function planAdditions(zk, server, seen) {
-  const have = new Set(zk.map((p) => p.pin));
-  const haveNumbers = new Set(zk.filter((p) => /^\d+$/.test(p.pin)).map((p) => Number(p.pin)));
-  const add = [];
-  const skipped = [];
-  const taken = new Set();
-  const consider = (r, kind) => {
-    const pin = String(r.pin || "").trim();
-    const name = String(r.name || "").trim();
-    if (!pin || r.status !== "ACTIVE" || have.has(pin) || taken.has(pin)) return;
-    if (!/^\d{1,9}$/.test(pin)) return skipped.push(`${name} (ID ${pin}: ZKBio IDs are numbers only)`);
-    if (!name || /^Fingerprint ID /i.test(name)) return; // a placeholder made from a scan, not a real person record
-    if (seen.has(pin)) return skipped.push(`${name} (ID ${pin} was removed from ZKBio earlier)`);
-    // "5" here and "005" there are most likely the same person typed without the zeros — never guess.
-    // ("0006" next to "006" is fine: the school uses both forms for different people.)
-    if (String(Number(pin)) === pin && haveNumbers.has(Number(pin))) return skipped.push(`${name} (ID ${pin} looks like an ID already in ZKBio written with other zeros)`);
-    taken.add(pin);
-    add.push(kind === "STUDENT"
-      ? { pin, name, kind, department: r.class || null, position: "Student" }
-      : { pin, name, kind, department: r.department || null, position: r.designation || null });
+/** Carry out the writes the school system asked for. Returns [{ id, ok, message, name, op }]. */
+function carryOut(file, writes, backupDir) {
+  const done = [];
+  const attempt = (op, items, fn) => {
+    if (items.length === 0) return;
+    try {
+      for (const r of fn()) done.push({ ...r, op });
+    } catch (e) {
+      const msg = e && e.message ? e.message : String(e);
+      const why = /readonly|EPERM|EACCES|access/i.test(msg) ? `Windows did not let this app write into ZKBio's folder (${msg})` : msg;
+      for (const w of items) done.push({ id: w.id, ok: false, message: why, name: w.name || w.pin, op });
+    }
   };
-  for (const s of server.staff || []) consider(s, "STAFF");
-  for (const s of server.students || []) consider(s, "STUDENT");
-  return { add, skipped };
+  const adds = writes.filter((w) => w.op === "ADD").slice(0, MAX_ADD_PER_RUN);
+  attempt("ADD", adds, () => {
+    const people = adds.map((w) => ({ pin: String(w.pin).trim(), name: String(w.name || "").trim(), kind: w.kind === "STUDENT" ? "STUDENT" : "STAFF", department: w.department, position: w.position }));
+    const added = new Set(addPeople(file, people, backupDir));
+    return adds.map((w) => ({ id: w.id, ok: true, message: added.has(String(w.name || "").trim()) ? "Added to ZKBio" : "Already in ZKBio", name: w.name || w.pin }));
+  });
+  const updates = writes.filter((w) => w.op === "UPDATE");
+  attempt("UPDATE", updates, () => {
+    const res = applyChanges(file, updates, backupDir);
+    const got = new Set(res.map((r) => r.id));
+    return [...res, ...updates.filter((w) => !got.has(w.id)).map((w) => ({ id: w.id, ok: false, message: "This person is not in ZKBio", name: w.name || w.pin }))];
+  });
+  const offs = writes.filter((w) => w.op === "OFF");
+  attempt("OFF", offs, () => switchOff(file, offs, backupDir));
+  return done;
 }
 
 /**
  * One full people sync. `fetch` must carry the app's login. Returns a short text for the status box.
- * `stateDir`: a folder of this app (not ZKBio's) for the backup copies and the "seen" list.
+ * `stateDir`: a folder of this app (not ZKBio's) for the backup copies.
  */
 async function syncPeople(appUrl, fetch, stateDir) {
   const file = findDb();
@@ -280,70 +307,39 @@ async function syncPeople(appUrl, fetch, stateDir) {
   } catch (e) {
     return `Could not read ZKBio's people list: ${e && e.message ? e.message : e}`;
   }
-  const parts = [];
 
-  // 1) ZKBio -> school system
   const url = `${appUrl}/api/biometric/personnel`;
-  const post = await fetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ people: zk.filter((p) => p.active).map(({ pin, name, department, position }) => ({ pin, name, department, position })) }),
-  });
+  const send = (body) => fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  const post = await send({ people: zk });
   if (post.status === 401) return "People: log in to the school system first.";
-  const pj = await post.json().catch(() => ({}));
-  if (!post.ok || !pj.ok) return `People: the server did not accept ZKBio's list (${pj.error || `HTTP ${post.status}`}).`;
-  const newHere = ((pj.added && pj.added.staff) || 0) + ((pj.added && pj.added.students) || 0);
-  parts.push(`ZKBio → school system: ${zk.length} people checked, ${newHere} new added.`);
+  const j = await post.json().catch(() => ({}));
+  if (!post.ok || !j.ok) return `People: the school system did not accept ZKBio's list (${j.error || `HTTP ${post.status}`}).`;
 
-  // 2) school system -> ZKBio
-  const seenFile = path.join(stateDir, "zkbio-seen.json");
-  const seen = loadSeen(seenFile);
-  try {
-    const get = await fetch(url, { cache: "no-store" });
-    const gj = await get.json().catch(() => ({}));
-    if (!get.ok || !gj.ok) throw new Error(gj.error || `HTTP ${get.status}`);
-    // Details edited in the school system since the last round.
-    const pending = Array.isArray(gj.pending) ? gj.pending : [];
-    if (pending.length) {
-      try {
-        const done = applyChanges(file, pending, path.join(stateDir, "zkbio-backups"));
-        if (done.length) {
-          await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ done: done.map(({ id, ok, message }) => ({ id, ok, message })) }) });
-          parts.push(`School system → ZKBio: updated ${done.map((d) => d.name).join(", ")}. In ZKBio press Refresh to see it.`);
-        }
-      } catch (e) {
-        parts.push(`School system → ZKBio: could not write ${pending.length} edit(s) (${e && e.message ? e.message : e}).`);
-      }
-    }
-    const plan = planAdditions(zk, gj, seen);
-    const now = plan.add.slice(0, MAX_ADD_PER_RUN);
-    let added = [];
-    if (now.length) {
-      try {
-        added = addPeople(file, now, path.join(stateDir, "zkbio-backups"));
-      } catch (e) {
-        const msg = e && e.message ? e.message : String(e);
-        parts.push(/readonly|EPERM|EACCES|access/i.test(msg)
-          ? `School system → ZKBio: ${now.length} waiting, but Windows did not let this app write into ZKBio's folder (${msg}).`
-          : `School system → ZKBio: could not add ${now.length} people (${msg}).`);
-      }
-    }
-    if (added.length && pending.length) {
-      const pins = new Set(now.map((p) => p.pin));
-      const done = pending.filter((c) => pins.has(String(c.pin).trim())).map((c) => ({ id: c.id, ok: true, message: "Added to ZKBio with these details" }));
-      if (done.length) await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ done }) }).catch(() => {});
-    }
-    if (added.length) parts.push(`School system → ZKBio: added ${added.join(", ")}. In ZKBio press Refresh to see them. Take the fingerprint from the person's page in Madani School.`);
-    else if (!now.length) parts.push("School system → ZKBio: nothing new to add.");
-    if (plan.add.length > now.length) parts.push(`${plan.add.length - now.length} more will follow at the next sync.`);
-    if (plan.skipped.length) parts.push(`Left alone: ${plan.skipped.join("; ")}.`);
-    for (const p of added.length ? now : []) seen.add(p.pin);
-  } catch (e) {
-    parts.push(`School system → ZKBio: could not get the list (${e && e.message ? e.message : e}).`);
+  const parts = [];
+  const newHere = ((j.added && j.added.staff) || 0) + ((j.added && j.added.students) || 0);
+  parts.push(`ZKBio → school system: ${zk.length} people compared, ${newHere} new added${j.updated ? `, ${j.updated} updated` : ""}.`);
+
+  // An older school system does not decide for this app — then nothing is written into ZKBio at all.
+  if (!Array.isArray(j.writes)) {
+    parts.push("School system → ZKBio: waiting for the school system's update; nothing was written.");
+    return parts.join("\n");
   }
-  for (const p of zk) seen.add(p.pin);
-  saveSeen(seenFile, seen);
+  if (j.writes.length === 0) {
+    parts.push("School system → ZKBio: nothing to write.");
+  } else {
+    const done = carryOut(file, j.writes, path.join(stateDir, "zkbio-backups"));
+    if (done.length) await send({ done: done.map(({ id, ok, message }) => ({ id, ok, message })) }).catch(() => {});
+    const say = { ADD: "added", UPDATE: "updated", OFF: "switched off" };
+    for (const op of ["ADD", "UPDATE", "OFF"]) {
+      const good = done.filter((d) => d.op === op && d.ok).map((d) => d.name);
+      if (good.length) parts.push(`School system → ZKBio: ${say[op]} ${good.join(", ")}.`);
+    }
+    const bad = done.filter((d) => !d.ok);
+    if (bad.length) parts.push(`School system → ZKBio: could not write ${bad.map((d) => d.name).join(", ")} — ${bad[0].message}.`);
+    if (done.some((d) => d.ok)) parts.push("In ZKBio, leave and re-open the Employee page to see it.");
+  }
+  if (j.needDecision) parts.push(`${j.needDecision} difference(s) are waiting for an admin: Biometric → ZKBio differences.`);
   return parts.join("\n");
 }
 
-module.exports = { syncPeople, planAdditions, readPeople, addPeople, applyChanges, findDb };
+module.exports = { syncPeople, readPeople, addPeople, applyChanges, switchOff, carryOut, findDb };
