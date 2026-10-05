@@ -6,6 +6,7 @@ const { app, BrowserWindow, Menu, shell, dialog, session, Notification, powerMon
 const path = require("path");
 const { autoUpdater } = require("electron-updater");
 const { syncAll } = require("./bridge");
+const { syncPeople } = require("./zkbio");
 
 const APP_URL = "https://madani-school-management-production.up.railway.app";
 const APP_ORIGIN = new URL(APP_URL).origin;
@@ -27,13 +28,22 @@ async function runBridge(manual) {
     } else {
       lastBridge = r.results.map((x) => `${x.name}: ${x.ok ? "OK" : "FAILED"} — ${x.message}`).join("\n");
     }
+    // People: ZKBio Time.Net on this PC <-> the school system (see zkbio.js).
+    if (r.loggedIn) {
+      try {
+        const people = await syncPeople(APP_URL, (url, opts) => session.defaultSession.fetch(url, opts), app.getPath("userData"));
+        lastBridge += `\n\nPeople\n${people}`;
+      } catch (e) {
+        lastBridge += `\n\nPeople: ${e && e.message ? e.message : e}`;
+      }
+    }
   } catch (e) {
     lastBridge = `Could not reach the server: ${e && e.message ? e.message : e}`;
   } finally {
     bridgeBusy = false;
   }
   lastBridge = `${new Date().toLocaleTimeString()} — ${lastBridge}`;
-  if (manual) dialog.showMessageBox(win, { type: "info", message: "Fingerprint device sync", detail: lastBridge });
+  if (manual) dialog.showMessageBox(win, { type: "info", message: "Fingerprint device and people sync", detail: lastBridge });
 }
 
 function createWindow() {
@@ -86,7 +96,7 @@ function buildMenu() {
           { role: "reload" },
           { role: "forceReload" },
           { type: "separator" },
-          { label: "Sync fingerprint device now", click: () => runBridge(true) },
+          { label: "Sync fingerprint device and people now", click: () => runBridge(true) },
           { label: "Fingerprint sync status", click: () => dialog.showMessageBox(win, { type: "info", message: "Last fingerprint sync", detail: lastBridge }) },
           { type: "separator" },
           { label: "Check for updates", click: () => checkForUpdates(true) },
