@@ -180,17 +180,21 @@ async function runDeviceCommands(appUrl, fetch, devices) {
 
 /**
  * Sync every active device once. `fetch` must carry the app's login cookies
- * (Electron's session.fetch). Returns a list of { name, ok, message }.
+ * (Electron's session.fetch). `opts.commands: false` skips the website's device requests (offline).
+ * Returns a list of { name, ok, message }.
  */
-async function syncAll(appUrl, fetch) {
+async function syncAll(appUrl, fetch, opts = {}) {
   const res = await fetch(`${appUrl}/api/biometric/bridge`, { cache: "no-store" });
   if (res.status === 401) return { loggedIn: false, results: [] };
   if (!res.ok) throw new Error(`Server answered ${res.status}`);
   const { devices = [] } = await res.json();
 
   // People to add / fingerprints to take come first, so the scan below already sees the new people.
+  // (Not while offline: those requests are made on the website.)
   let commandText = "";
-  try { commandText = await runDeviceCommands(appUrl, fetch, devices); } catch { /* tried again at the next round */ }
+  if (opts.commands !== false) {
+    try { commandText = await runDeviceCommands(appUrl, fetch, devices); } catch { /* tried again at the next round */ }
+  }
 
   const results = [];
   for (const d of devices) {
