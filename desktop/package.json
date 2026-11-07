@@ -32,7 +32,9 @@
       "package.json",
       "bridge.js",
       "zkbio.js",
-      "backup.js"
+      "backup.js",
+      "offline.js",
+      "offline-changes.js"
     ],
     "win": {
       "target": [
