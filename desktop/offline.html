@@ -12,7 +12,7 @@
   <button id="retry">Try again</button>
 </div>
 <script>
-  const target = new URLSearchParams(location.search).get("url") || "https://madani-school-management-production.up.railway.app";
+  const target = new URLSearchParams(location.search).get("url") || "https://srv2045997.hstgr.cloud";
   document.getElementById("retry").onclick = () => { location.href = target; };
   setInterval(() => { if (navigator.onLine) location.href = target; }, 15000);
 </script>
