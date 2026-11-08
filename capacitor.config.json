@@ -6,7 +6,7 @@
     "androidScheme": "https",
     "cleartext": true,
     "allowNavigation": ["*"],
-    "url": "https://madani-school-management-production.up.railway.app"
+    "url": "https://srv2045997.hstgr.cloud"
   },
   "android": { "allowMixedContent": true }
 }

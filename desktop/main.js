@@ -14,7 +14,7 @@ const { syncPeople } = require("./zkbio");
 const { copyToPc, newestCopy } = require("./backup");
 const { Offline } = require("./offline");
 
-const APP_URL = "https://madani-school-management-production.up.railway.app";
+const APP_URL = "https://srv2045997.hstgr.cloud";
 const APP_ORIGIN = new URL(APP_URL).origin;
 const COOKIE = "sms_session";
 
