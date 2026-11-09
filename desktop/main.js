@@ -267,6 +267,38 @@ async function runCommandsOnly() {
   }
 }
 
+// ==================== Printing receipts ====================
+
+/** The school page asks to print "/__madani/print?url=<receipt page>": returns that receipt page, else null. */
+function printTarget(url) {
+  try {
+    const u = new URL(url);
+    return u.pathname === "/__madani/print" ? u.searchParams.get("url") : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Print a school page (a fee receipt) on this PC's default printer, without a print window. */
+function silentPrint(url) {
+  if (!url || !(isLive(url) || isLocal(url))) return; // only the school's own pages
+  const w = new BrowserWindow({ show: false, webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true } });
+  const close = () => { if (!w.isDestroyed()) w.destroy(); };
+  w.webContents.once("did-fail-load", (_e, code) => {
+    if (code === -3) return;
+    notify("Receipt not printed", "The receipt could not be opened. Try again.");
+    close();
+  });
+  w.webContents.once("did-finish-load", () => {
+    w.webContents.print({ silent: true, printBackground: true }, (ok, reason) => {
+      if (!ok) notify("Receipt not printed", `The printer did not take it (${reason || "no printer"}). Check that the printer is on and set as the default printer in Windows.`);
+      close();
+    });
+  });
+  setTimeout(close, 2 * 60 * 1000); // never left hanging
+  w.loadURL(url);
+}
+
 // ==================== Window ====================
 
 function createWindow() {
@@ -291,6 +323,8 @@ function createWindow() {
 
   // Links to other websites open in the normal browser; school pages (online or offline) stay in the app.
   win.webContents.setWindowOpenHandler(({ url }) => {
+    const receipt = printTarget(url);
+    if (receipt) { silentPrint(receipt); return { action: "deny" }; } // "Print receipt": straight to the printer
     if (isLive(url) || isLocal(url)) return { action: "allow" };
     shell.openExternal(url);
     return { action: "deny" };
@@ -420,6 +454,8 @@ if (!app.requestSingleInstanceLock()) {
     if (win) { if (win.isMinimized()) win.restore(); win.focus(); }
   });
   app.whenReady().then(async () => {
+    // Tells the school pages this app can print receipts straight to the printer.
+    app.userAgentFallback = `${app.userAgentFallback} MadaniPrint/1`;
     offline = new Offline({
       appUrl: APP_URL,
       root: path.join(app.getPath("userData"), "offline"),
